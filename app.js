@@ -5,45 +5,38 @@ const fs = require('fs');
 const path = require('path');
 const expressJSDocSwagger = require('express-jsdoc-swagger');
 
+// Constants
 const app = express();
 const port = process.env.PORT || 3000;
+const BASE_URL = 'https://restcountries.com/v3.1';
+const DEFAULT_TTL = 60 * 60; // 60 minutes in seconds
+const CACHE_TTL = process.env.CACHE_TTL ? parseInt(process.env.CACHE_TTL) : DEFAULT_TTL;
+const errorLogFile = path.join(__dirname, 'error_log.json');
 
-// Create a new cache instance
+// Cache setup
 const cache = new NodeCache();
 
-// Default TTL of 60 minutes (in seconds)
-const DEFAULT_TTL = 60 * 60;
-
-// Configurable cache TTL (in seconds)
-const CACHE_TTL = process.env.CACHE_TTL ? parseInt(process.env.CACHE_TTL) : DEFAULT_TTL;
-
-// Base URL for restcountries.com API
-const BASE_URL = 'https://restcountries.com/v3.1';
-
-// Error logging
-const errorLogFile = path.join(__dirname, 'error_log.json');
+// Error logging setup
 let errorLog = { errors: [], totalRequests: 0 };
 
-// Initialize error log
+// Function to initialize error log
 const initErrorLog = () => {
-  try {
-    if (fs.existsSync(errorLogFile)) {
-      const data = fs.readFileSync(errorLogFile, 'utf8');
-      if (data) {
-        errorLog = JSON.parse(data);
-      }
-    } else {
-      saveErrorLog();
+    try {
+        if (fs.existsSync(errorLogFile)) {
+            const data = fs.readFileSync(errorLogFile, 'utf8');
+            if (data) errorLog = JSON.parse(data);
+        } else {
+            saveErrorLog();
+        }
+    } catch (error) {
+        console.error('Error initializing error log:', error);
+        saveErrorLog();
     }
-  } catch (error) {
-    console.error('Error initializing error log:', error);
-    saveErrorLog();
-  }
 };
 
-// Function to save error log
+// Function to save error log to a file
 const saveErrorLog = () => {
-  fs.writeFileSync(errorLogFile, JSON.stringify(errorLog), 'utf8');
+    fs.writeFileSync(errorLogFile, JSON.stringify(errorLog), 'utf8');
 };
 
 // Initialize error log on startup
@@ -51,45 +44,46 @@ initErrorLog();
 
 // Function to log errors
 const logError = (error) => {
-  const now = new Date();
-  errorLog.errors.push({ timestamp: now, message: error.message });
-  
-  // Remove errors older than 24 hours
-  const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
-  errorLog.errors = errorLog.errors.filter(e => new Date(e.timestamp) > oneDayAgo);
-  
-  saveErrorLog();
+    const now = new Date();
+    errorLog.errors.push({ timestamp: now, message: error.message });
+
+    // Remove errors older than 24 hours
+    const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
+    errorLog.errors = errorLog.errors.filter(e => new Date(e.timestamp) > oneDayAgo);
+
+    saveErrorLog();
 };
 
 // Swagger configuration
 const swaggerOptions = {
-  info: {
-    version: '1.0.0',
-    title: 'REST Countries API',
-    description: 'A REST API wrapper for restcountries.com with caching',
-  },
-  security: {
-    BasicAuth: {
-      type: 'http',
-      scheme: 'basic',
+    info: {
+        version: '1.0.0',
+        title: 'REST Countries API',
+        description: 'A REST API wrapper for restcountries.com with caching',
     },
-  },
-  baseDir: __dirname,
-  filesPattern: './**/*.js',
-  swaggerUIPath: '/api-docs',
-  exposeSwaggerUI: true,
-  exposeApiDocs: false,
-  apiDocsPath: '/v3/api-docs',
-  notRequiredAsNullable: false,
-  swaggerUiOptions: {},
+    security: {
+        BasicAuth: {
+            type: 'http',
+            scheme: 'basic',
+        },
+    },
+    baseDir: __dirname,
+    filesPattern: './*.js', // Scan all JS files in the root
+    swaggerUIPath: '/api-docs',
+    exposeSwaggerUI: true,
+    exposeApiDocs: true,
+    apiDocsPath: '/v1/swagger.json', // Path for swagger.json file
+    notRequiredAsNullable: false,
+    swaggerUiOptions: {}
+        
 };
+
 
 // Initialize Swagger
 expressJSDocSwagger(app)(swaggerOptions);
 
 // Middleware to handle caching and API requests
 const cacheMiddleware = (endpoint) => async (req, res, next) => {
-    // Replace placeholders in the endpoint (like :name) with actual values from req.params
     let apiEndpoint = endpoint;
     Object.keys(req.params).forEach((param) => {
         apiEndpoint = apiEndpoint.replace(`:${param}`, req.params[param]);
@@ -98,19 +92,12 @@ const cacheMiddleware = (endpoint) => async (req, res, next) => {
     const key = `${apiEndpoint}${JSON.stringify(req.query)}`;
     errorLog.totalRequests++;
 
-    console.log('key: ' + key);
-
     try {
         const cachedData = cache.get(key);
 
         if (cachedData) {
-            console.log('key: ' + key + ' CACHE HIT');
             return res.json(cachedData);
         }
-
-        console.log('key: ' + key + ' CACHE MISS');
-
-        console.log('Calling: ' + `${BASE_URL}${apiEndpoint}`);
 
         const response = await axios.get(`${BASE_URL}${apiEndpoint}`, {
             params: req.query
@@ -125,6 +112,8 @@ const cacheMiddleware = (endpoint) => async (req, res, next) => {
         saveErrorLog();
     }
 };
+
+// Route Definitions with JSDoc Annotations
 
 /**
  * GET /independent
@@ -204,28 +193,30 @@ app.get('/region/:region', cacheMiddleware('/region/:region'));
  * @return {object} 200 - Health status of the API
  */
 app.get('/health', (req, res) => {
-  const now = new Date();
-  const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
-  const recentErrors = errorLog.errors.filter(e => new Date(e.timestamp) > oneDayAgo);
-  const errorRate = errorLog.totalRequests > 0 ? (recentErrors.length / errorLog.totalRequests) * 100 : 0;
+    const now = new Date();
+    const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
+    const recentErrors = errorLog.errors.filter(e => new Date(e.timestamp) > oneDayAgo);
+    const errorRate = errorLog.totalRequests > 0 ? (recentErrors.length / errorLog.totalRequests) * 100 : 0;
 
-  res.json({
-    status: 'OK',
-    uptime: process.uptime(),
-    totalRequests: errorLog.totalRequests,
-    errorsLast24h: recentErrors.length,
-    errorRate: `${errorRate.toFixed(2)}%`
-  });
+    res.json({
+        status: 'OK',
+        uptime: process.uptime(),
+        totalRequests: errorLog.totalRequests,
+        errorsLast24h: recentErrors.length,
+        errorRate: `${errorRate.toFixed(2)}%`
+    });
 });
 
-// Error handling middleware
+
+// Global error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  logError(err);
-  res.status(500).json({ error: 'Something went wrong!' });
+    console.error(err.stack);
+    logError(err);
+    res.status(500).json({ error: 'Something went wrong!' });
 });
 
+// Start the server
 app.listen(port, () => {
-  console.log(`REST Countries API listening at http://localhost:${port}`);
-  console.log(`Swagger documentation available at http://localhost:${port}/api-docs`);
+    console.log(`REST Countries API listening at http://localhost:${port}`);
+    console.log(`Swagger documentation available at http://localhost:${port}/api-docs`);
 });
